@@ -153,7 +153,6 @@ def detect_display_name_spoofing(from_header):
         result["status"] = "typosquat"
     elif has_org_word:
         result["status"] = "unrelated"
-    # otherwise leave the status as none: not enough signal to tell this apart from an ordinary personal display name
     return result
  
 def detect_link_domain_mismatch(link_domain, sender_domain):
@@ -166,4 +165,39 @@ def detect_link_domain_mismatch(link_domain, sender_domain):
     return ("typosquat" if similarity >= 0.75 else "none"), similarity
 
 
- 
+ # ==================== PARSER ==============================================
+
+def parse_email_file(file_path):
+    with open(file_path, "rb") as f:
+        msg = BytesParser(policy=policy.default).parse(f)
+    return msg
+
+def parse_email_bytes(email_bytes):
+    return BytesParser(policy=policy.default).parsebytes(email_bytes)
+
+def read_msg(msg):
+    plaintext = ""
+    html = ""
+    if msg.is_multipart():
+        for part in msg.walk():
+            ct = part.get_content_type()
+            if ct == "text/plain":
+                plaintext += part.get_content() or ""
+            elif ct == "text/html":
+                html += part.get_content() or ""
+    else:
+        ct = msg.get_content_type()
+        if ct == "text/plain":
+            plaintext = msg.get_content() or ""
+        elif ct == "text/html":
+            html = msg.get_content() or ""
+    return plaintext, html
+
+def extract_attachments(msg):
+    attachments = []
+    for part in msg.walk():
+        if part.get_content_disposition() == "attachment":
+            filename = part.get_filename() or "unknown"
+            content_type = part.get_content_type()
+            attachments.append({"filename": filename, "type": content_type})
+    return attachments+
