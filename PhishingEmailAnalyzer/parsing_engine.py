@@ -201,3 +201,4 @@ def extract_attachments(msg):
             content_type = part.get_content_type()
             attachments.append({"filename": filename, "type": content_type})
     return attachments
+
