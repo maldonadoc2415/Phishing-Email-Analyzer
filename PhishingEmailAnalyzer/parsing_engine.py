@@ -202,3 +202,115 @@ def extract_attachments(msg):
             attachments.append({"filename": filename, "type": content_type})
     return attachments
 
+# ============== ANALYZER ===================
+
+def analyze_header(msg):
+    findings = []
+    score = 0
+
+    from_header = msg.get("From", "")
+    reply_to_header = msg.get("Reply-To", "")
+    return_path = msg.get("Return-Path", "")
+    received_headers = msg.get_all("Received", [])
+    spf = msg.get("Received-SPF", "")
+    dkim = msg.get("DKIM-Signature", "")
+    dmarc = msg.get("Authentication-Results", "")
+    from_domain = extract_domain(from_header)
+    reply_domain = extract_domain(reply_to_header) if reply_to_header else ""
+    return_domain = extract_domain(return_path) if return_path else ""
+    
+    if reply_domain and from_domain and reply_domain != from_domain:
+        findings.append({
+            "indicator": f"Reply-To domain '{reply_domain}' does not match From domain '{from_domain}'",
+            "detail": f"From: {from_domain} | Reply-To: {reply_domain}",
+            "severity": "HIGH",
+            "score": 20
+        })
+        score += 20
+
+    if return_domain and from_domain and return_domain != from_domain:
+        findings.append({
+            "indicator": f"Return-Path domain '{return_domain}' does not match From domain '{from_domain}'",
+            "detail": f"From: {from_domain} | Return-Path: {return_domain}",
+            "severity": "HIGH",
+            "score": 20
+        })
+        score += 20
+
+    if spf and ("fail" in spf.lower() or "softfail" in spf.lower()):
+        findings.append({
+            "indicator": "SPF check failed",
+            "detail": f"SPF: {spf}",
+            "severity": "HIGH",
+            "score": 20
+        })
+        score += 20
+    elif not spf:
+        findings.append({
+            "indicator": "SPF record not found",
+            "detail": "Email lacks SPF record",
+            "severity": "MEDIUM",
+            "score": 10
+        })
+        score += 10
+
+    if not dkim:
+        findings.append({
+            "indicator": "DKIM record not found",
+            "detail": "Email lacks DKIM record",
+            "severity": "MEDIUM",
+            "score": 10
+        })
+        score += 10
+
+    if dmarc and "dmarc=fail" in dmarc.lower():
+        findings.append({
+            "indicator": "DMARC check failed",
+            "detail": "DMARC check failed - sender may be spoofed!",
+            "severity": "HIGH",
+            "score": 20
+        })
+        score += 20
+
+
+    spoof = detect_display_name_spoofing(from_header)
+    if spoof["status"] == "typosquat":
+        findings.append({
+            "indicator": "Possible display name spoofing",
+            "detail": f"Display Name: {spoof['display_name']} | Claimed Brand: {spoof['claimed_brand']} | Domain: {spoof['domain']}",
+            "severity": "CRITICAL",
+            "score": 40
+        })
+        score += 40
+    
+    elif spoof["status"] == "unrelated":
+        findings.append({
+            "indicator": "Possible display name spoofing",
+            "detail": f"Display Name: {spoof['display_name']} | Claimed Brand: {spoof['claimed_brand']} | Domain: {spoof['domain']}",
+            "severity": "HIGH",
+            "score": 20
+        })
+        score += 20
+
+    # Excessive hops 
+
+    if len(received_headers) > 6:
+        findings.append({
+            "indicator": "Excessive hops detected",
+            "detail": f"Number of Received headers: {len(received_headers)}",
+            "severity": "LOW",
+            "score": 5
+        })
+
+    return findings, score, {
+        "from": from_header,
+        "reply_to": reply_to_header,
+        "return_path": return_path,
+        "spf": spf or "No SPF record found",
+        "dkim": dkim or "No DKIM record found",
+        "dmarc": dmarc or "No DMARC record found",
+        "date": msg.get("Date", ""),
+        "received": received_headers,
+        "score": score
+    }
+
