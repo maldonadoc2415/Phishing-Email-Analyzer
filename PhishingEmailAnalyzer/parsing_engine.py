@@ -226,8 +226,7 @@ def analyze_header(msg):
             "severity": "HIGH",
             "score": 20
         })
-        score += 20
-
+        
     if return_domain and from_domain and return_domain != from_domain:
         findings.append({
             "indicator": f"Return-Path domain '{return_domain}' does not match From domain '{from_domain}'",
@@ -235,7 +234,6 @@ def analyze_header(msg):
             "severity": "HIGH",
             "score": 20
         })
-        score += 20
 
     if spf and ("fail" in spf.lower() or "softfail" in spf.lower()):
         findings.append({
@@ -244,7 +242,7 @@ def analyze_header(msg):
             "severity": "HIGH",
             "score": 20
         })
-        score += 20
+        
     elif not spf:
         findings.append({
             "indicator": "SPF record not found",
@@ -252,7 +250,6 @@ def analyze_header(msg):
             "severity": "MEDIUM",
             "score": 10
         })
-        score += 10
 
     if not dkim:
         findings.append({
@@ -261,8 +258,7 @@ def analyze_header(msg):
             "severity": "MEDIUM",
             "score": 10
         })
-        score += 10
-
+    
     if dmarc and "dmarc=fail" in dmarc.lower():
         findings.append({
             "indicator": "DMARC check failed",
@@ -270,9 +266,7 @@ def analyze_header(msg):
             "severity": "HIGH",
             "score": 20
         })
-        score += 20
-
-
+        
     spoof = detect_display_name_spoofing(from_header)
     if spoof["status"] == "typosquat":
         findings.append({
@@ -281,8 +275,7 @@ def analyze_header(msg):
             "severity": "CRITICAL",
             "score": 40
         })
-        score += 40
-    
+        
     elif spoof["status"] == "unrelated":
         findings.append({
             "indicator": "Possible display name spoofing",
@@ -290,10 +283,8 @@ def analyze_header(msg):
             "severity": "HIGH",
             "score": 20
         })
-        score += 20
 
     # Excessive hops 
-
     if len(received_headers) > 6:
         findings.append({
             "indicator": "Excessive hops detected",
@@ -302,15 +293,183 @@ def analyze_header(msg):
             "score": 5
         })
 
-    return findings, score, {
+    score = sum(f["score"] for f in findings)
+    header_info = {
         "from": from_header,
         "reply_to": reply_to_header,
         "return_path": return_path,
-        "spf": spf or "No SPF record found",
-        "dkim": dkim or "No DKIM record found",
-        "dmarc": dmarc or "No DMARC record found",
-        "date": msg.get("Date", ""),
-        "received": received_headers,
-        "score": score
+        "received_count": len(received_headers),
+        "spf": spf,
+        "dkim": dkim,
+        "dmarc": dmarc,
+        
     }
+    return findings, score, header_info
 
+def analyze_content(plaintext, html):
+    findings = []
+    body = (plaintext + " " + html).lower()
+    
+    # Check for urgency keywords
+    urgency_found = [kw for kw in URGENCY_KEYWORDS if kw in body]
+    if len (urgency_found) > 3:
+        findings.append({
+            "indicator": "Excessive urgency keywords detected",
+            "detail": f"Urgency keywords found: {', '.join(urgency_found)}",
+            "severity": "HIGH",
+            "score": 20
+        })
+    
+    elif len(urgency_found) > 0:
+        findings.append({
+            "indicator": "Urgency keywords detected",
+            "detail": f"Urgency keywords found: {', '.join(urgency_found)}",
+            "severity": "MEDIUM",
+            "score": 10
+        })
+        
+    # Check for suspicious keywords    
+    suspicious_found = [kw for kw in SUSPICIOUS_KEYWORDS if kw in body]
+    if len(suspicious_found) > 3:
+        findings.append({
+            "indicator": "Excessive suspicious keywords detected",
+            "detail": f"Suspicious keywords found: {', '.join(suspicious_found)}",
+            "severity": "HIGH",
+            "score": 20
+        })
+        
+    elif len(suspicious_found) > 0:
+        findings.append({
+            "indicator": "Suspicious keywords detected",
+            "detail": f"Suspicious keywords found: {', '.join(suspicious_found)}",
+            "severity": "MEDIUM",
+            "score": 10
+        })
+        
+    # Check for generic greeting
+    if re.search(r'\bdear\s+(valued\s+)?(customer|user|account holder |member)\b', body):
+        findings.append({
+            "indicator": "Generic greeting detected",
+            "detail": "Email uses a generic greeting instead of addressing the recipient by name.",
+            "severity": "LOW",
+            "score": 5
+        })
+        
+    # Check for requests for sensitive information
+    if re.search(r'(enter|provide|confirm|verify).{0,30}(password|credentials|account|ssn|social security number|credit card|bank account|card number)', body):
+        findings.append({
+            "indicator": "Request for sensitive information detected",
+            "detail": "Email requests the recipient to enter or provide sensitive information.",
+            "severity": "CRITICAL",
+            "score": 40
+        })
+    
+    score = sum(f["score"] for f in findings)
+    return findings, score
+
+def analyze_urls(plaintext, html, sender_domain):
+    findings = []
+    urls = extract_url(plaintext + " " + html)
+    unique_domains = set()
+    
+    for url in urls:
+        domain = get_domain_from_url(url)
+        if not domain:
+            continue
+        unique_domains.add(domain)
+        
+        # Check for raw IP addresses in URLs
+        if is_ip_address(domain):
+            findings.append({
+                "indicator": "URL contains raw IP address",
+                "detail": f"URL: {url}",
+                "severity": "HIGH",
+                "score": 20
+            })
+        
+        # Check for shorteners
+        if any(domain == shortener or domain.endswith("." + shortener) for shortener in URL_SHORTENERS):
+            findings.append({
+                "indicator": "URL uses a known URL shortener",
+                "detail": f"URL: {url}",
+                "severity": "MEDIUM",
+                "score": 10
+            })
+        
+        for tld in SUSPICIOUS_TLDS:
+            if domain.endswith(tld):
+                findings.append({
+                    "indicator": "URL uses a suspicious top-level domain",
+                    "detail": f"URL: {url} | TLD: {tld}",
+                    "severity": "MEDIUM",
+                    "score": 10
+                })
+                break
+        
+        # Link domain mismatch detection
+        status, similarity = detect_link_domain_mismatch(domain, sender_domain)
+        if status == "typosquat":
+            findings.append({
+                "indicator": "URL domain is a potential typosquat of sender domain",
+                "detail": f"URL: {url} | Sender Domain: {sender_domain} | Similarity: {similarity}",
+                "severity": "CRITICAL",
+                "score": 40
+            })
+        
+        # Heavy percent-encoding detection
+        if len(re.findall(r'%[0-9A-Fa-f]{2}', url)) > 3:
+            findings.append({
+                "indicator": "URL contains excessive percent-encoding",
+                "detail": f"URL: {url}",
+                "severity": "HIGH",
+                "score": 20
+            })
+    
+        # Check for numerous domains in one email
+        if len(unique_domains) > 5:
+            findings.append({
+                "indicator": "Email contains links to numerous unique domains",
+                "detail": f"Unique domains found: {len(unique_domains)}",
+                "severity": "LOW",
+                "score": 5
+            })
+        
+        score = sum(f["score"] for f in findings)
+    return findings, score, urls
+
+def analyze_attachments(attachments):
+    findings = []
+    
+    for att in attachments:
+        filename = att["filename"].lower()
+        extension = "." + filename.split(".")[-1] if "." in filename else ""
+        
+        if extension in DANGEROUS_EXTENSIONS:
+            findings.append({
+                "indicator": "Attachment has a dangerous file extension",
+                "detail": f"Filename: {filename} | Extension: {extension}",
+                "severity": "CRITICAL",
+                "score": 40
+            })
+        elif extension in SUSPICIOUS_EXTENSIONS:
+            findings.append({
+                "indicator": "Attachment has a suspicious file extension",
+                "detail": f"Filename: {filename} | Extension: {extension}",
+                "severity": "HIGH",
+                "score": 20
+            })
+            
+        # Check for double extensions (e.g., "document.pdf.exe")
+        if filename.count(".") > 1 and ("." + filename.split(".")[-1]) in DANGEROUS_EXTENSIONS:
+            findings.append({
+                "indicator": "Attachment has a double extension with a dangerous file type",
+                "detail": f"Filename: {filename}",
+                "severity": "CRITICAL",
+                "score": 40
+            })
+            
+    score = sum(f["score"] for f in findings)
+    return findings, score
+    
+            
+ 
